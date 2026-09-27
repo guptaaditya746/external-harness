@@ -27,6 +27,24 @@ Everything else is plain bash in a per-run folder. The commands read `kb.sqlite`
 once from `papers.jsonl`, `passages.jsonl`, `facts.jsonl` and the ontology Turtle files. It is
 opened read-only and rebuilt when an input file changes.
 
+## Isolation
+
+A command never inherits the runner's environment. It sees only the index path, `PATH` and a home
+inside the run folder, so there are no API keys and no paths to other data.
+
+With `environment.sandbox: bubblewrap`, which the example config uses, each command also runs in a
+fresh [bubblewrap](https://github.com/containers/bubblewrap) namespace:
+- it has no network;
+- the run folder is the only place it can write;
+- it can read only the system (read-only), this package's Python runtime and the index.
+
+So the agent cannot read the gold set, other runs, the raw corpus files or anything else on the
+machine. `xh check` tests that bubblewrap works.
+
+With `sandbox: none`, commands run in the run folder but can read what the user can read.
+`result.json` then lists commands that name paths outside the run folder or read the environment
+(`outside_paths`), so a run can be audited.
+
 ## What it must deliver
 
 `answer.json` in the run folder:
@@ -55,7 +73,7 @@ Every value a run depends on is in `config.yaml`:
 - the model (a litellm model string, e.g. `openai/heavy-model`, plus the LiteLLM proxy URL and key);
 - the limits (steps, wall time, command timeout);
 - the corpus folder and ontology files;
-- the environment (`local` by default; `bubblewrap` or `docker` through mini-SWE-agent);
+- the sandbox (`bubblewrap`, recommended, or `none`; see below);
 - the prompts (the defaults in `src/external_harness/prompts/`, or your own Jinja files).
 
 `${VAR}` and `${VAR:-default}` are read from the environment. Each result records the config's
@@ -66,7 +84,9 @@ digest; the API key is not part of it.
 `runs/<run id>/` holds:
 - `work/answer.json`: what the agent wrote;
 - `trajectory.json`: every message, command and output, from mini-SWE-agent;
-- `result.json`: status, answer, kept and dropped triples, token usage, config digest and versions.
+- `result.json`: status, answer, kept and dropped triples, how many kept triples quote evidence that is
+  not in their passage (`evidence_not_in_source`), `outside_paths`, token usage, the corpus folder and
+  index fingerprint, the config digest and versions.
 
 Statuses:
 - `answered`
@@ -102,7 +122,9 @@ You can also run questions without the harness:
   gets no planner, no reranker, no schema inference and no verifier.
 - The step limit and wall time are reported with every result. Compare paths at similar budgets.
 - mini-SWE-agent is pinned (2.4.6). Its prompts are ours, in `prompts/`, and their text is part of the
-  config digest when you replace them.
+  config digest when you replace them. Its global `.env` is not read: each run points it at an empty
+  folder.
+- Run evaluation batches with `sandbox: bubblewrap`, so the agent cannot see the gold or other runs.
 
 ## Development
 

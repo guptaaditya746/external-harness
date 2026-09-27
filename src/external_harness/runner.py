@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 import time
 import uuid
@@ -36,7 +37,7 @@ TEXT_FORMAT = """
 Every reply must contain exactly one bash command in a block like this, after a short explanation:
 
 ```mswea_bash_command
-kbsearch "retrieval augmented generation" -k 10
+kbsearch "MethodX BenchY" -k 10
 ```
 """
 
@@ -57,22 +58,27 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
         emit: Emit | None = None, model: Any | None = None) -> dict[str, Any]:
     """Answer ``question``; returns the result document (also written to ``<run folder>/result.json``).
     ``model`` replaces the configured model (tests pass mini-SWE-agent's DeterministicModel)."""
-    os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
-    os.environ.setdefault("MSWEA_COST_TRACKING", config.model.cost_tracking)
-    from minisweagent.agents.default import DefaultAgent
-    from minisweagent.environments import get_environment
-    from minisweagent.models import get_model
-
-    emit = emit or (lambda _event: None)
     started = time.monotonic()
     run_id = run_id or f"x-{uuid.uuid4().hex[:8]}"
     folder = (out or config.environment.workdir_root / run_id).resolve()
     work = folder / "work"
     work.mkdir(parents=True, exist_ok=True)
+    (work / "answer.json").unlink(missing_ok=True)          # never score an earlier run's answer
+    # mini-SWE-agent reads a global .env from its config folder: point it at an empty one of ours.
+    os.environ["MSWEA_GLOBAL_CONFIG_DIR"] = str(folder / ".mini-swe-agent")
+    os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
+    os.environ.setdefault("MSWEA_COST_TRACKING", config.model.cost_tracking)
+    from minisweagent.agents.default import DefaultAgent
+    from minisweagent.models import get_model
+
+    from .environment import KbEnvironment, outside_paths
+
+    emit = emit or (lambda _event: None)
     kbc = config.knowledge_base
     index = kb.ensure(kbc.corpus_dir, kbc.ontology, kbc.index_dir)
     with kb.connect(index) as conn:
         counts = kb.stats(conn)
+        fingerprint = kb.meta(conn).get("fingerprint", "")
     events: list[dict[str, Any]] = []
 
     def record(event: dict[str, Any]) -> None:
@@ -103,18 +109,23 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
 
     textbased = config.model.model_class == "litellm_textbased"
     model = model or get_model(config={**config.model.model_dump(), "observation_template": OBSERVATION})
+    sandboxed = config.environment.sandbox == "bubblewrap"
+    # What the commands need to run: the Python runtime and this package (its source folder when it is
+    # installed in editable mode).
+    runtime = [sys.prefix, sys.base_prefix, str(Path(sys.executable).resolve().parent),
+               str(Path(__file__).resolve().parent.parent)]
+    # Everything a command sees: nothing is inherited from this process (no keys, no other paths).
     command_env = {
-        "XH_KB_DB": str(index),
-        "XH_MAX_HITS": str(kbc.max_hits),
-        "XH_MAX_TRIPLES": str(config.output.max_triples),
+        "XH_KB_DB": str(index), "XH_MAX_HITS": str(kbc.max_hits), "XH_MAX_TRIPLES": str(config.output.max_triples),
         # The venv's bin folder holds kbsearch, kbread, ... (console scripts of this package).
-        "PATH": os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
-        "PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PIP_PROGRESS_BAR": "off", "TQDM_DISABLE": "1",
+        "PATH": os.pathsep.join([str(Path(sys.executable).parent), "/usr/local/bin", "/usr/bin", "/bin"]),
+        "HOME": str(work), "TMPDIR": "/tmp" if sandboxed else str(work), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+        "TERM": "dumb", "PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PYTHONDONTWRITEBYTECODE": "1",
     }
-    environment = get_environment({
-        "environment_class": config.environment.type, "cwd": str(work),
-        "env": command_env, "timeout": config.agent.command_timeout_seconds, **config.environment.options,
-    }, default_type="local")
+    environment = KbEnvironment(
+        cwd=str(work), env=command_env, timeout=config.agent.command_timeout_seconds,
+        sandbox=config.environment.sandbox, bwrap=config.environment.bwrap,
+        read_only=[*runtime, str(index.parent), *map(str, config.environment.extra_read_only)])
     trajectory = folder / "trajectory.json"
     agent = TracedAgent(
         model, environment,
@@ -125,7 +136,18 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
         max_consecutive_format_errors=config.agent.max_consecutive_format_errors,
         output_path=trajectory,
     )
-    record({"type": "start", "run_id": run_id, "harness": "mini-swe-agent", "model": config.model.model_name})
+
+    def stop(signum: int, _frame: Any) -> None:
+        # The harness stops a run with SIGTERM: end the running command too (it has its own session).
+        environment.kill_current()
+        raise SystemExit(128 + signum)
+
+    try:
+        previous = signal.signal(signal.SIGTERM, stop)
+    except ValueError:                                          # not the main thread (tests)
+        previous = None
+    record({"type": "start", "run_id": run_id, "harness": "mini-swe-agent", "model": config.model.model_name,
+            "sandbox": config.environment.sandbox})
     error = None
     try:
         exit_info = agent.run(question, n_papers=counts["papers"], n_passages=counts["passages"],
@@ -133,10 +155,15 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
     except Exception as exc:
         exit_info = {"exit_status": type(exc).__name__, "submission": ""}
         error = f"{type(exc).__name__}: {str(exc)[:500]}"
+    finally:
+        environment.kill_current()
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
     exit_status = str(exit_info.get("exit_status") or "")
     answer_file = work / "answer.json"
-    document = contract.parse(answer_file.read_text(encoding="utf-8")) if answer_file.is_file() else None
-    if document is None and exit_info.get("submission"):
+    written = answer_file.is_file()
+    document = contract.parse(answer_file.read_text(encoding="utf-8", errors="replace")) if written else None
+    if document is None and not written and exit_info.get("submission"):
         document = contract.parse(str(exit_info["submission"]))
     with kb.connect(index) as conn:
         checked = contract.check(document, conn, config.output.max_triples)
@@ -147,8 +174,9 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
     elif exit_status in {"LimitsExceeded", "TimeExceeded"}:
         status = "limits_exceeded"
     else:
-        status = "no_answer" if document is None else "invalid_answer"
+        status = "invalid_answer" if written or document is not None else "no_answer"
     calls = [event for event in events if event["type"] == "model_call"]
+    commands = [event["command"] for event in events if event["type"] == "command"]
     result = {
         "run_id": run_id,
         "question": question,
@@ -159,10 +187,12 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
         "answer": checked.answer,
         "triples": [triple.model_dump() for triple in checked.triples],
         "dropped_triples": checked.dropped,
+        "evidence_not_in_source": checked.evidence_not_in_source,
+        "outside_paths": [] if sandboxed else outside_paths(commands, work),
         "usage": {
             "model_calls": len(calls),
             "failed_model_calls": sum(not event["ok"] for event in calls),
-            "commands": sum(event["type"] == "command" for event in events),
+            "commands": len(commands),
             "prompt_tokens": sum(event.get("prompt_tokens", 0) for event in calls),
             "completion_tokens": sum(event.get("completion_tokens", 0) for event in calls),
             "model_seconds": round(sum(event["seconds"] for event in calls), 2),
@@ -171,8 +201,10 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
         "harness": {"name": "mini-swe-agent", "version": metadata.version("mini-swe-agent"),
                     "external_harness": metadata.version("external-harness")},
         "config": {"name": config.name, "digest": config.digest(), "path": str(config.source or ""),
-                   "model": config.model.model_name, "step_limit": config.agent.step_limit},
-        "knowledge_base": {"index": str(index), **counts},
+                   "model": config.model.model_name, "step_limit": config.agent.step_limit,
+                   "sandbox": config.environment.sandbox},
+        "knowledge_base": {"index": str(index), "corpus_dir": str(kbc.corpus_dir), "fingerprint": fingerprint,
+                           **counts},
         "trajectory": str(trajectory),
         "events": events,
     }

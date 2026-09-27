@@ -37,7 +37,7 @@ def _cut(text: str, limit: int) -> str:
 
 
 def _words(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", str(text).casefold())
+    return re.findall(r"[a-z0-9]+", str(text).lower())
 
 
 def _has_words(haystack: str, needle: str) -> bool:
@@ -99,7 +99,7 @@ def kbread(argv: list[str] | None = None) -> None:
 
 def kbpapers(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="kbpapers", description="List corpus papers by DBLP metadata.")
-    parser.add_argument("--venue", help='whole words of the venue, e.g. "ACL" or "EMNLP 2025"')
+    parser.add_argument("--venue", help='whole words of the venue, e.g. "ICML" or "NeurIPS 2023"')
     parser.add_argument("--year", help="publication year")
     parser.add_argument("--title", help="a word or phrase the title contains (word prefix)")
     parser.add_argument("--author", help="part of an author name")

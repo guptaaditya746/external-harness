@@ -20,6 +20,10 @@ import typer
 from . import kb, runner
 from .config import load
 
+_BASH_TOOL = {"type": "function", "function": {
+    "name": "bash", "description": "Run a bash command.",
+    "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}}
+
 app = typer.Typer(add_completion=False, no_args_is_help=True, help=__doc__.split("\n\n")[0])
 ConfigOption = Annotated[Path, typer.Option("--config", "-c", help="The YAML config file.", exists=True)]
 
@@ -49,6 +53,17 @@ def check(config: ConfigOption,
     problems = []
     if not counts["terms"]:
         problems.append("the ontology has no classes or properties (knowledge_base.ontology)")
+    typer.echo(f"sandbox: {cfg.environment.sandbox}")
+    if cfg.environment.sandbox == "bubblewrap":
+        import shutil
+        import subprocess
+
+        probe = subprocess.run([cfg.environment.bwrap, "--unshare-all", "--ro-bind", "/usr", "/usr", "--ro-bind-try",
+                                "/bin", "/bin", "--ro-bind-try", "/lib", "/lib", "--ro-bind-try", "/lib64", "/lib64",
+                                "/bin/true"], capture_output=True, text=True) if shutil.which(cfg.environment.bwrap) else None
+        if probe is None or probe.returncode != 0:
+            problems.append("bubblewrap does not work here (" + (probe.stderr.strip()[:200] if probe else "not installed")
+                            + "): install it or set environment.sandbox: none")
     if model:
         import httpx
 
@@ -66,6 +81,21 @@ def check(config: ConfigOption,
                 typer.echo(f"endpoint {base}: {', '.join(map(str, served))}")
                 if wanted not in served:
                     problems.append(f"model {wanted!r} is not served by {base}")
+                elif cfg.model.model_class == "litellm":
+                    # Native tool calls need a tool-call parser on the vLLM side; without one every
+                    # step fails with a format error, so check once here.
+                    probe = httpx.post(f"{base}/chat/completions", timeout=60,
+                                       headers={"Authorization": f"Bearer {key}"} if key else {},
+                                       json={"model": wanted, "max_tokens": 200, "temperature": 0,
+                                             "messages": [{"role": "user", "content": "Use the bash tool to run: echo ok"}],
+                                             "tools": [_BASH_TOOL]})
+                    probe.raise_for_status()
+                    calls = probe.json()["choices"][0]["message"].get("tool_calls") or []
+                    if calls:
+                        typer.echo(f"tool calling: ok ({calls[0]['function']['arguments'][:60]})")
+                    else:
+                        problems.append("the model answered without a tool call: enable a tool-call parser for it "
+                                        "or set model.model_class: litellm_textbased")
             except Exception as exc:
                 problems.append(f"endpoint {base} unreachable: {type(exc).__name__}: {exc}")
     for problem in problems:

@@ -8,10 +8,13 @@ records a fingerprint of its inputs; ``ensure`` rebuilds it when a file changed.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -36,7 +39,7 @@ create table terms(name text, prefixed text, iri text, kind text, domain text, r
 """
 _STOP = {"a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "in", "is", "it", "of", "on",
          "or", "that", "the", "this", "to", "was", "what", "which", "who", "why", "with", "do", "does",
-         "did", "papers", "paper", "corpus", "indexed"}
+         "did", "papers", "paper"}
 
 
 def _jsonl(path: Path) -> Iterator[dict[str, Any]]:
@@ -110,8 +113,7 @@ def build(corpus_dir: Path, ontology: list[Path], index_dir: Path) -> dict[str, 
             raise FileNotFoundError(f"ontology file {path} does not exist")
     index_dir.mkdir(parents=True, exist_ok=True)
     target = index_dir / INDEX_NAME
-    partial = target.with_suffix(".partial")
-    partial.unlink(missing_ok=True)
+    partial = index_dir / f"{INDEX_NAME}.{os.getpid()}.{uuid.uuid4().hex[:8]}.partial"   # never shared
     conn = sqlite3.connect(partial)
     try:
         conn.executescript(_TABLES)
@@ -130,8 +132,8 @@ def build(corpus_dir: Path, ontology: list[Path], index_dir: Path) -> dict[str, 
         terms = _terms(ontology) if ontology else []
         conn.executemany("insert into terms values (?,?,?,?,?,?,?,?,?)", terms)
         conn.executemany("insert into meta values (?,?)", [
-            ("fingerprint", fingerprint(corpus_dir, ontology)), ("corpus_dir", str(corpus_dir)),
-            ("ontology", json.dumps([str(path) for path in ontology])), ("schema_version", SCHEMA_VERSION)])
+            ("fingerprint", fingerprint(corpus_dir, ontology)), ("schema_version", SCHEMA_VERSION),
+            ("ontology_files", json.dumps([path.name for path in ontology]))])
         conn.commit()
     finally:
         conn.close()
@@ -139,26 +141,49 @@ def build(corpus_dir: Path, ontology: list[Path], index_dir: Path) -> dict[str, 
     return {"papers": len(papers), "passages": len(passages), "facts": len(facts), "terms": len(terms)}
 
 
+def _current(target: Path, corpus_dir: Path, ontology: list[Path]) -> bool:
+    if not target.is_file():
+        return False
+    try:
+        with connect(target) as conn:
+            return meta(conn).get("fingerprint") == fingerprint(corpus_dir, ontology)
+    except sqlite3.Error:
+        return False
+
+
 def ensure(corpus_dir: Path, ontology: list[Path], index_dir: Path) -> Path:
-    """The index path, rebuilt first when missing or out of date."""
+    """The index path, rebuilt first when missing or out of date. Concurrent runs wait for one
+    rebuild (a file lock) instead of building over each other."""
     target = index_dir / INDEX_NAME
-    if target.is_file():
-        try:
-            with connect(target) as conn:
-                stored = conn.execute("select value from meta where key='fingerprint'").fetchone()
-            if stored and stored[0] == fingerprint(corpus_dir, ontology):
-                return target
-        except sqlite3.Error:
-            pass
-    build(corpus_dir, ontology, index_dir)
+    if _current(target, corpus_dir, ontology):
+        return target
+    index_dir.mkdir(parents=True, exist_ok=True)
+    with (index_dir / ".lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not _current(target, corpus_dir, ontology):
+            build(corpus_dir, ontology, index_dir)
     return target
 
 
 def connect(path: Path) -> sqlite3.Connection:
     """Read-only: the agent cannot change the knowledge base."""
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def meta(conn: sqlite3.Connection) -> dict[str, str]:
+    return {row[0]: row[1] for row in conn.execute("select key, value from meta")}
+
+
+def passage_texts(conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for start in range(0, len(ids), 500):
+        chunk = ids[start:start + 500]
+        marks = ",".join("?" * len(chunk))
+        found |= {row[0]: row[1] for row in conn.execute(
+            f"select passage_id, text from passages where passage_id in ({marks})", chunk)}
+    return found
 
 
 def match_expression(query: str) -> str:
@@ -166,7 +191,7 @@ def match_expression(query: str) -> str:
     ranks passages with more and rarer matches first). Empty when nothing searchable is left."""
     phrases = re.findall(r'"([^"]+)"', query)
     rest = re.sub(r'"[^"]*"', " ", query)
-    words = [word for word in re.findall(r"\w+", rest.casefold()) if word not in _STOP and len(word) > 1]
+    words = [word for word in re.findall(r"\w+", rest.lower()) if word not in _STOP and len(word) > 1]
     parts = []
     for phrase in phrases:
         tokens = re.findall(r"\w+", phrase)

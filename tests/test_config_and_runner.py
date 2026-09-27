@@ -73,3 +73,73 @@ def test_an_invalid_answer_file_is_reported(config) -> None:
     result = runner.run(config, "q", run_id="x-bad", model=_model([
         "echo '{\"answer\": \"\"}' > answer.json", "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]))
     assert result["status"] == "invalid_answer" and result["problem"] == '"answer" must be a non-empty string'
+
+
+def test_commands_see_only_the_listed_environment(config, monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_TOKEN", "do-not-leak")
+    result = runner.run(config, "q", run_id="x-env", model=_model(["env", "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]))
+    trajectory = json.loads(Path(result["trajectory"]).read_text())
+    listing = trajectory["messages"][3]["content"]
+    assert "XH_KB_DB=" in listing and "do-not-leak" not in listing and "SECRET_TOKEN" not in listing
+    assert result["outside_paths"] == ["env"]                       # flagged for the audit
+
+
+def test_an_earlier_answer_file_is_never_scored_again(config) -> None:
+    first = runner.run(config, "q", run_id="x-again", model=_model([
+        "cat <<'EOF' > answer.json\n" + json.dumps(ANSWER) + "\nEOF", "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]))
+    assert first["status"] == "answered" and first["evidence_not_in_source"] == 0
+    second = runner.run(config, "q", run_id="x-again", model=_model(["echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]))
+    assert second["status"] == "no_answer"
+
+
+def test_audit_flags_commands_that_look_outside_the_run_folder(tmp_path: Path) -> None:
+    from external_harness.environment import outside_paths
+
+    work = tmp_path / "work"
+    commands = ["kbsearch x", "cat /etc/passwd", "cat ../other/answer.json", f"cat {work}/answer.json",
+                "ls > /dev/null", "printenv"]
+    assert outside_paths(commands, work) == ["cat /etc/passwd", "cat ../other/answer.json", "printenv"]
+
+
+def test_a_stopped_run_kills_the_command_in_its_own_session(tmp_path: Path) -> None:
+    import threading
+    import time
+
+    from external_harness.environment import KbEnvironment
+
+    environment = KbEnvironment(cwd=str(tmp_path), env={"PATH": "/usr/bin:/bin"}, timeout=60)
+    outputs: list[dict] = []
+    thread = threading.Thread(target=lambda: outputs.append(environment.execute({"command": "sleep 30"})))
+    started = time.monotonic()
+    thread.start()
+    while environment.current is None:
+        time.sleep(0.05)
+    environment.kill_current()
+    thread.join(timeout=10)
+    assert not thread.is_alive() and time.monotonic() - started < 10 and outputs[0]["returncode"] != 0
+
+
+def _bwrap_works() -> bool:
+    import shutil
+    import subprocess
+
+    if not shutil.which("bwrap"):
+        return False
+    return subprocess.run(["bwrap", "--unshare-all", "--ro-bind", "/usr", "/usr", "--ro-bind-try", "/bin", "/bin",
+                           "--ro-bind-try", "/lib", "/lib", "--ro-bind-try", "/lib64", "/lib64", "/bin/true"],
+                          capture_output=True).returncode == 0
+
+
+@pytest.mark.skipif(not _bwrap_works(), reason="bubblewrap is not available")
+def test_the_bubblewrap_sandbox_shows_the_knowledge_base_and_nothing_else(config, corpus: Path) -> None:
+    config.environment.sandbox = "bubblewrap"
+    result = runner.run(config, "q", run_id="x-bwrap", model=_model([
+        "kbsearch hallucination -k 1",
+        f"cat {corpus}/papers.jsonl || echo NO-CORPUS-FILE",
+        "ls /root /home 2>&1 | head -3; echo ok > note.txt && cat note.txt",
+        "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]))
+    messages = json.loads(Path(result["trajectory"]).read_text())["messages"]
+    assert "p1-abstract | p1" in messages[3]["content"]                   # the index is readable
+    assert "NO-CORPUS-FILE" in messages[5]["content"]                     # the raw corpus folder is not
+    assert "ok" in messages[7]["content"] and "No such file" in messages[7]["content"]
+    assert result["outside_paths"] == []

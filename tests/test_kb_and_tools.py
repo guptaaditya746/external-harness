@@ -100,3 +100,34 @@ def test_kbcheck_reports_invalid_files(index: Path, tmp_path: Path, capsys) -> N
     path.write_text("not json")
     with pytest.raises(SystemExit, match="invalid"):
         tools.kbcheck([str(path)])
+
+
+def test_concurrent_rebuilds_do_not_collide(corpus: Path, tmp_path: Path) -> None:
+    import threading
+
+    results: list[Path] = []
+    errors: list[BaseException] = []
+
+    def build() -> None:
+        try:
+            results.append(kb.ensure(corpus, [corpus / "ontology.ttl"], tmp_path / "shared"))
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=build) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors and len(set(results)) == 1
+    with kb.connect(results[0]) as conn:
+        assert kb.stats(conn)["passages"] == 3 and "corpus_dir" not in kb.meta(conn)
+
+
+def test_evidence_that_is_not_in_the_passage_is_counted(index: Path) -> None:
+    document = {"answer": "x [p1-abstract].", "triples": [
+        {"subject": "p1", "predicate": "usesDataset", "object": "BenchY", "source_id": "p1-abstract",
+         "evidence": "evaluate on BenchY"},
+        {"subject": "p1", "predicate": "claims", "object": "fast", "source_id": "p1-s2-p1", "evidence": "it is very fast"}]}
+    with kb.connect(index) as conn:
+        assert contract.check(document, conn).evidence_not_in_source == 1

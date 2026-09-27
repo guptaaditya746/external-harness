@@ -54,11 +54,13 @@ class KnowledgeBaseConfig(_Strict):
 
 
 class EnvironmentConfig(_Strict):
-    # Passed through to mini-SWE-agent: local (default), bubblewrap, docker, ... See its docs for the
-    # extra keys each one takes (they go in ``options``).
-    type: str = "local"
+    # bubblewrap: every command in a fresh namespace (no network; writable: the run folder only;
+    # readable: the system, this package's Python and the index). none: a clean environment in the
+    # run folder, but the user's files stay readable (result.json flags commands that look outside).
+    sandbox: Literal["none", "bubblewrap"] = "none"
+    bwrap: str = "bwrap"
+    extra_read_only: list[Path] = Field(default_factory=list, description="More folders visible in the sandbox.")
     workdir_root: Path = Path("runs")
-    options: dict[str, Any] = Field(default_factory=dict)
 
 
 class PromptConfig(_Strict):
@@ -126,6 +128,7 @@ def load(path: str | Path) -> Config:
     kb.corpus_dir, kb.index_dir = resolve(kb.corpus_dir), resolve(kb.index_dir)
     kb.ontology = [resolve(item) for item in kb.ontology]
     config.environment.workdir_root = resolve(config.environment.workdir_root)
+    config.environment.extra_read_only = [resolve(item) for item in config.environment.extra_read_only]
     for name in ("system", "instance"):
         value = getattr(config.prompts, name)
         if value != "default":

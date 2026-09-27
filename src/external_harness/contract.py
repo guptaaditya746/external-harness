@@ -37,6 +37,7 @@ class Checked(BaseModel):
     triples: list[Triple] = Field(default_factory=list)
     dropped: list[dict[str, Any]] = Field(default_factory=list)
     problem: str | None = None
+    evidence_not_in_source: int = 0      # kept triples whose evidence quote is not in their passage
 
 
 def parse(text: str) -> dict[str, Any] | None:
@@ -95,4 +96,11 @@ def check(document: dict[str, Any] | None, conn: sqlite3.Connection | None, max_
         else:
             seen.add(key)
             kept.append(triple)
-    return Checked(ok=True, answer=answer.strip(), triples=kept, dropped=dropped)
+    texts = kb.passage_texts(conn, [triple.source_id for triple in kept]) if conn is not None else {}
+    unmatched = sum(1 for triple in kept if triple.evidence and triple.source_id in texts
+                    and _normal(triple.evidence) not in _normal(texts[triple.source_id]))
+    return Checked(ok=True, answer=answer.strip(), triples=kept, dropped=dropped, evidence_not_in_source=unmatched)
+
+
+def _normal(text: str) -> str:
+    return " ".join(re.findall(r"\w+", text.lower()))
