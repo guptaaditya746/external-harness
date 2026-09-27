@@ -38,7 +38,7 @@ class AgentConfig(_Strict):
     step_limit: int = Field(30, ge=1, description="Model calls (each one command) before the run stops.")
     wall_time_limit_seconds: int = Field(900, ge=0, description="0 = no limit.")
     command_timeout_seconds: int = Field(60, ge=1)
-    max_consecutive_format_errors: int = 3
+    max_consecutive_format_errors: int = Field(5, ge=1, description="Replies without a command in a row before the run ends.")
 
 
 class KnowledgeBaseConfig(_Strict):

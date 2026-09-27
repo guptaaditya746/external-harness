@@ -5,6 +5,7 @@
     xh run --config config.yaml --question "…"    # one question; result.json in the run folder
     xh run ... --events                           # plus one JSON event per line on stdout (for the harness UI)
     xh batch --config config.yaml --questions questions.json [--ids nlp01,nlp02]
+    xh show runs/<run id>/trajectory.json         # what the agent did, step by step (also external_trajectory.json)
 """
 
 from __future__ import annotations
@@ -151,3 +152,25 @@ def batch(
             handle.write(json.dumps({"question_id": row["id"], **line}, ensure_ascii=False) + "\n")
         typer.echo(f"[{row['id']}] {result['status']} {len(result['triples'])} triples {result['duration_s']}s")
     typer.echo(f"results in {target}")
+
+
+@app.command()
+def show(trajectory: Annotated[Path, typer.Argument(help="trajectory.json (or the harness's external_trajectory.json).",
+                                                   exists=True)],
+         width: Annotated[int, typer.Option(help="Characters shown per message.")] = 300) -> None:
+    """Print a run step by step: each reply's text and command, the command's output, rejections and the exit."""
+    data = json.loads(trajectory.read_text(encoding="utf-8"))
+    info = data.get("info", {})
+    typer.echo(f"exit: {info.get('exit_status')} · model calls: {info.get('model_stats', {}).get('api_calls')}")
+    for index, message in enumerate(data.get("messages", [])):
+        role = message.get("role")
+        if index < 2:
+            continue                                            # system and task prompts
+        text = message.get("content")
+        text = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False)
+        text = " ".join((text or "").split())
+        commands = [action.get("command", "") for action in (message.get("extra") or {}).get("actions", [])]
+        label = {"assistant": "reply", "tool": "output", "user": "output/rejection", "exit": "exit"}.get(role, role)
+        typer.echo(f"[{index}] {label}: {text[:width]}")
+        for command in commands:
+            typer.echo(f"      $ {' '.join(command.split())[:width]}")

@@ -143,3 +143,24 @@ def test_the_bubblewrap_sandbox_shows_the_knowledge_base_and_nothing_else(config
     assert "NO-CORPUS-FILE" in messages[5]["content"]                     # the raw corpus folder is not
     assert "ok" in messages[7]["content"] and "No such file" in messages[7]["content"]
     assert result["outside_paths"] == []
+
+
+def test_an_answer_written_as_a_plain_reply_is_accepted_and_marked(config) -> None:
+    from minisweagent.models.test_models import DeterministicModel, make_output
+
+    reply = json.dumps(ANSWER)
+    model = DeterministicModel(outputs=[make_output(reply, [{"command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"}],
+                                                    cost=0.0)])
+    result = runner.run(config, "q", run_id="x-reply", model=model)
+    assert result["status"] == "answered" and result["answer_source"] == "final_message"
+    assert [t["object"] for t in result["triples"]] == ["BenchY"]
+
+
+def test_show_prints_the_steps(config, capsys) -> None:
+    from external_harness.cli import show
+
+    result = runner.run(config, "q", run_id="x-show", model=_model(["kbpapers --count",
+                                                                   "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]))
+    show(Path(result["trajectory"]), width=80)
+    out = capsys.readouterr().out
+    assert out.startswith("exit: Submitted") and "$ kbpapers --count" in out

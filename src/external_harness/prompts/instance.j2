@@ -13,6 +13,13 @@ The corpus and its ontology are available only through these commands (each take
 
 Each command runs in a new shell; files you write in the current directory stay. You can run at most {{ step_limit }} commands, so search with several words at once and read only promising passages.
 
+## How to reply
+{% if textbased %}
+Every reply is a short thought followed by exactly one bash command in a ```mswea_bash_command block. A reply without a command is rejected.
+{% else %}
+Every reply is a short thought followed by exactly one call of the bash tool with one command. A reply without a tool call is rejected, and after a few rejections in a row the run ends without an answer. Never write the answer as plain text: the answer exists only once answer.json is written with a command.
+{% endif %}
+
 ## What to deliver
 Write `answer.json` in the current directory:
 

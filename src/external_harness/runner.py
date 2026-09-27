@@ -151,7 +151,7 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
     error = None
     try:
         exit_info = agent.run(question, n_papers=counts["papers"], n_passages=counts["passages"],
-                              max_triples=config.output.max_triples)
+                              max_triples=config.output.max_triples, textbased=textbased)
     except Exception as exc:
         exit_info = {"exit_status": type(exc).__name__, "submission": ""}
         error = f"{type(exc).__name__}: {str(exc)[:500]}"
@@ -163,8 +163,20 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
     answer_file = work / "answer.json"
     written = answer_file.is_file()
     document = contract.parse(answer_file.read_text(encoding="utf-8", errors="replace")) if written else None
+    answer_source = "answer.json" if document is not None else None
     if document is None and not written and exit_info.get("submission"):
         document = contract.parse(str(exit_info["submission"]))
+        answer_source = "submission" if document is not None else None
+    if document is None and not written:
+        # The model sometimes writes its final answer as a plain reply instead of a file: accept an
+        # answer-shaped JSON object from its last replies (recorded, so the result says so).
+        for message in reversed(agent.messages):
+            if message.get("role") != "assistant" or not isinstance(message.get("content"), str):
+                continue
+            found = contract.parse(message["content"])
+            if found is not None and "answer" in found:
+                document, answer_source = found, "final_message"
+                break
     with kb.connect(index) as conn:
         checked = contract.check(document, conn, config.output.max_triples)
     if error:
@@ -187,11 +199,14 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
         "answer": checked.answer,
         "triples": [triple.model_dump() for triple in checked.triples],
         "dropped_triples": checked.dropped,
+        "answer_source": answer_source,
         "evidence_not_in_source": checked.evidence_not_in_source,
         "outside_paths": [] if sandboxed else outside_paths(commands, work),
         "usage": {
             "model_calls": len(calls),
             "failed_model_calls": sum(not event["ok"] for event in calls),
+            # Replies without a command (no tool call, or not in the expected format).
+            "format_errors": sum(str(event.get("error", "")).startswith("FormatError") for event in calls),
             "commands": len(commands),
             "prompt_tokens": sum(event.get("prompt_tokens", 0) for event in calls),
             "completion_tokens": sum(event.get("completion_tokens", 0) for event in calls),
