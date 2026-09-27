@@ -2,6 +2,7 @@
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <https://example.org/onto#> .
 
 hrn:Paper a owl:Class ; rdfs:label "Paper" ; rdfs:comment "A publication in the corpus." .
 hrn:Dataset a owl:Class ; rdfs:subClassOf hrn:ResearchEntity ; rdfs:comment "A dataset or benchmark." .
@@ -10,3 +11,6 @@ hrn:researchRelation a owl:ObjectProperty .
 hrn:usesDataset a owl:ObjectProperty ; rdfs:subPropertyOf hrn:researchRelation ; rdfs:domain hrn:Paper ;
     rdfs:range hrn:Dataset ; rdfs:comment "The paper evaluates on or trains with the dataset." .
 hrn:authoredBy a owl:ObjectProperty ; rdfs:domain hrn:Paper ; rdfs:comment "An author of the paper." .
+hrn:employs a owl:ObjectProperty ; owl:equivalentProperty ex:employs ; rdfs:domain hrn:ResearchEntity ;
+    rdfs:range hrn:ResearchEntity ; rdfs:comment "One research entity applies another." .
+ex:employs a owl:ObjectProperty .

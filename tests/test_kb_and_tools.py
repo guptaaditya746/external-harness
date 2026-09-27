@@ -10,7 +10,7 @@ from external_harness import contract, kb, tools
 
 def test_index_counts_and_search_uses_stemming(index: Path) -> None:
     with kb.connect(index) as conn:
-        assert kb.stats(conn) == {"papers": 2, "passages": 3, "facts": 4, "terms": 6}
+        assert kb.stats(conn) == {"papers": 2, "passages": 3, "facts": 4, "terms": 8}
         hits = kb.search(conn, "hallucinations detectors", k=5)
         assert hits[0]["passage_id"] == "p1-abstract"
         assert kb.search(conn, "the of and") == []                   # nothing searchable left
@@ -70,6 +70,9 @@ def test_ontology_listing(index: Path, capsys) -> None:
     out = capsys.readouterr().out
     assert "hrn:usesDataset | object property (sub of hrn:researchRelation) | hrn:Paper -> hrn:Dataset" in out
     assert "(1 terms)" in out
+    tools.onto(["employs"])
+    out = capsys.readouterr().out
+    assert "One research entity applies another. (same as ex:employs)" in out     # equivalences are named
 
 
 def test_contract_keeps_valid_triples_and_says_why_others_were_dropped(index: Path) -> None:

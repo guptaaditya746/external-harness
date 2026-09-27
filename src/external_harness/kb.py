@@ -22,7 +22,7 @@ from typing import Any
 CORPUS_FILES = ("papers.jsonl", "passages.jsonl", "facts.jsonl")
 OPTIONAL_FILES = ("references.jsonl",)
 INDEX_NAME = "kb.sqlite"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"   # 2: terms name their owl:equivalentClass/Property
 
 _TABLES = """
 create table meta(key text primary key, value text);
@@ -97,6 +97,10 @@ def _terms(ontology: list[Path]) -> list[tuple[str, ...]]:
             parent = graph.value(iri, RDFS.subClassOf if is_class else RDFS.subPropertyOf)
             name = re.split(r"[#/]", str(iri))[-1]
             comment = graph.value(iri, RDFS.comment) or graph.value(iri, SKOS.definition) or ""
+            same = graph.value(iri, OWL.equivalentClass if is_class else OWL.equivalentProperty)
+            if isinstance(same, URIRef):
+                # e.g. the harness's uses = cskg-ont:uses: one relation under two names.
+                comment = f"{comment} (same as {short(same)})".strip()
             rows[str(iri)] = (name, short(iri), str(iri), kind, short(graph.value(iri, RDFS.domain)),
                               short(graph.value(iri, RDFS.range)), short(parent if isinstance(parent, URIRef) else None),
                               str(graph.value(iri, RDFS.label) or ""), " ".join(str(comment).split())[:300])
