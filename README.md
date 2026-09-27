@@ -32,7 +32,7 @@ opened read-only and rebuilt when an input file changes.
 A command never inherits the runner's environment. It sees only the index path, `PATH` and a home
 inside the run folder, so there are no API keys and no paths to other data.
 
-With `environment.sandbox: bubblewrap`, which the example config uses, each command also runs in a
+With `environment.sandbox: bubblewrap`, each command also runs in a
 fresh [bubblewrap](https://github.com/containers/bubblewrap) namespace:
 - it has no network;
 - the run folder is the only place it can write;

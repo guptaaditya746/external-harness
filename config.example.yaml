@@ -1,10 +1,10 @@
 # External harness: everything a run depends on. Copy to config.yaml and adjust.
 # ${VAR} / ${VAR:-default} come from the environment; relative paths are relative to this file.
-name: mini-swe-agent-heavy
+name: mini-swe-agent-lite
 
 model:
   # litellm model string: "openai/<alias>" talks to any OpenAI-compatible endpoint (the LiteLLM proxy).
-  model_name: openai/${XH_MODEL:-heavy-model}
+  model_name: openai/${XH_MODEL:-lite-model}
   model_class: litellm              # litellm = native tool calls; litellm_textbased = command in a markdown block
   model_kwargs:
     api_base: ${LITELLM_BASE_URL:-http://127.0.0.1:4000/v1}
@@ -29,7 +29,7 @@ environment:
   # bubblewrap (recommended for evaluation): each command in a fresh sandbox, no network, writable run
   # folder only, nothing else of the machine readable (not the gold, not other runs). none: clean
   # environment in the run folder, but the user's files stay readable. `which bwrap` to check.
-  sandbox: ${XH_SANDBOX:-bubblewrap}
+  sandbox: ${XH_SANDBOX:-none}
   workdir_root: runs                # one folder per run: work/answer.json, trajectory.json, result.json
 
 prompts:
