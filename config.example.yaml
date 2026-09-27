@@ -1,0 +1,38 @@
+# External harness: everything a run depends on. Copy to config.yaml and adjust.
+# ${VAR} / ${VAR:-default} come from the environment; relative paths are relative to this file.
+name: mini-swe-agent-heavy
+
+model:
+  # litellm model string: "openai/<alias>" talks to any OpenAI-compatible endpoint (the LiteLLM proxy).
+  model_name: openai/${XH_MODEL:-heavy-model}
+  model_class: litellm              # litellm = native tool calls; litellm_textbased = command in a markdown block
+  model_kwargs:
+    api_base: ${LITELLM_BASE_URL:-http://127.0.0.1:4000/v1}
+    api_key: ${VLLM_API_KEY:-sk-local-vllm}
+    temperature: 0.0
+    max_tokens: 2048
+  cost_tracking: ignore_errors      # local models have no price
+
+agent:
+  step_limit: 30                    # model calls, one command each
+  wall_time_limit_seconds: 900
+  command_timeout_seconds: 60
+
+knowledge_base:
+  corpus_dir: ${CORPUS_ROOT}        # papers.jsonl, passages.jsonl, facts.jsonl (references.jsonl optional)
+  ontology:                         # the vocabulary the knowledge graph uses (export it from the harness:
+    - ${XH_ONTOLOGY:-../rambodambo/artifacts/ontology/harness_seed.ttl}   #  `make ontology` in rambodambo)
+  index_dir: .xh-index              # kb.sqlite, rebuilt when an input file changes
+  max_hits: 10                      # default number of kbsearch hits
+
+environment:
+  type: local                       # local, or bubblewrap / docker (mini-SWE-agent environments; extra keys in options)
+  workdir_root: runs                # one folder per run: work/answer.json, trajectory.json, result.json
+  options: {}
+
+prompts:
+  system: default                   # or a path to your own Jinja template
+  instance: default
+
+output:
+  max_triples: 60

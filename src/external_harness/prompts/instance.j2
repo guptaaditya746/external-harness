@@ -1,0 +1,32 @@
+Answer this question about a corpus of {{ n_papers }} scientific papers ({{ n_passages }} passages):
+
+<question>{{ task }}</question>
+
+## Commands
+The corpus and its ontology are available only through these commands (each takes --help):
+- `kbsearch "words" [-k 10] [--paper ID]`: full-text search (BM25) over the passages. Put exact phrases in double quotes. Prints passage ids.
+- `kbread ID [--section WORD]`: one passage by passage id, or a paper's metadata and passage list by paper id.
+- `kbpapers [--venue V] [--year Y] [--title WORD] [--author NAME] [--count]`: papers by DBLP metadata.
+- `kbfacts PAPER_ID`, `kbfacts --cited-by PAPER_ID`, `kbfacts --author NAME`: DBLP facts (title, author, year, venue) and citations between corpus papers.
+- `onto [WORD] [--kind class|property]`: the classes and properties of the ontology the knowledge graph uses.
+- `kbcheck`: checks answer.json.
+
+Each command runs in a new shell; files you write in the current directory stay. You can run at most {{ step_limit }} commands, so search with several words at once and read only promising passages.
+
+## What to deliver
+Write `answer.json` in the current directory:
+
+    {"answer": "...", "triples": [{"subject": "...", "predicate": "...", "object": "...", "source_id": "...", "evidence": "..."}]}
+
+- answer: 1 to 5 sentences that answer the question directly. Put the source id of each claim in square brackets after it, e.g. "... evaluates on BenchY [p99-s3-p2]."
+- triples: the facts behind the answer, at most {{ max_triples }}, one fact each.
+  - subject: the paper id when the fact is about a paper.
+  - predicate: a property printed by `onto` when one fits (for example authoredBy or usesDataset); otherwise a new lowerCamelCase relation name that names the relation, not the object.
+  - object: a paper id, an author name, a value or a short noun phrase.
+  - source_id: the passage id or the fact source id (from kbfacts) that states the fact.
+  - evidence: a short exact quote from that source.
+- If the corpus does not answer the question, say so in answer and give "triples": [].
+
+Write the file with a heredoc (cat <<'EOF' > answer.json ... EOF), run `kbcheck`, fix what it reports, and then finish with exactly this command and nothing else:
+
+    echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT && cat answer.json

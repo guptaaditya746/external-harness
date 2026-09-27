@@ -1,0 +1,45 @@
+[project]
+name = "external-harness"
+version = "0.1.0"
+description = "A light external baseline for the Research Harness: mini-SWE-agent with bash commands over the corpus and ontology, configured by one YAML file."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "mini-swe-agent==2.4.6",   # pinned: the harness under test must not change between runs
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pyyaml>=6",
+    "rdflib>=7",
+    "typer>=0.12",
+]
+
+[project.scripts]
+xh = "external_harness.cli:app"
+# The agent's commands (on PATH inside every run; see tools.py).
+kbsearch = "external_harness.tools:kbsearch"
+kbread = "external_harness.tools:kbread"
+kbpapers = "external_harness.tools:kbpapers"
+kbfacts = "external_harness.tools:kbfacts"
+onto = "external_harness.tools:onto"
+kbcheck = "external_harness.tools:kbcheck"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/external_harness"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF", "SIM"]

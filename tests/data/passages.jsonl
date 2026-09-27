@@ -1,0 +1,3 @@
+{"passage_id": "p1-abstract", "paper_id": "p1", "section_path": "Abstract", "para_idx": 0, "text": "We study hallucination detection for retrieval-augmented generation and evaluate on BenchY."}
+{"passage_id": "p1-s2-p1", "paper_id": "p1", "section_path": "Method", "para_idx": 1, "text": "Our detector scores each generated sentence against the retrieved documents."}
+{"passage_id": "p2-abstract", "paper_id": "p2", "section_path": "Abstract", "para_idx": 0, "text": "MethodX colors graphs quickly and is compared with the detector of prior work."}
