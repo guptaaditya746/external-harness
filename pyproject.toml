@@ -23,6 +23,7 @@ kbpapers = "external_harness.tools:kbpapers"
 kbfacts = "external_harness.tools:kbfacts"
 onto = "external_harness.tools:onto"
 kbcheck = "external_harness.tools:kbcheck"
+kbdoc = "external_harness.tools:kbdoc"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

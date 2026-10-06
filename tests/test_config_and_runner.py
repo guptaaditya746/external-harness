@@ -164,3 +164,36 @@ def test_show_prints_the_steps(config, capsys) -> None:
     show(Path(result["trajectory"]), width=80)
     out = capsys.readouterr().out
     assert out.startswith("exit: Submitted") and "$ kbpapers --count" in out
+
+
+DOC = [{"triple_id": "t00001", "subject": "p1", "predicate": "usesDataset", "object": "BenchY", "paper_id": "p1",
+        "source_id": "p1-abstract", "evidence": "evaluate on BenchY", "interpretation": "i1"},
+       {"triple_id": "t00002", "subject": "p1", "predicate": "usesOptimizer", "object": "AdamW", "paper_id": "p1",
+        "source_id": "p1-abstract", "evidence": "trained with AdamW", "interpretation": "i1"}]
+
+
+def test_with_an_evidence_document_the_agent_has_only_kbdoc_and_kbcheck(config, tmp_path: Path) -> None:
+    doc = tmp_path / "doc.json"
+    doc.write_text(json.dumps(DOC))
+    answer = {"answer": "p1 evaluates on BenchY [p1-abstract].", "triples": [
+        {k: DOC[0][k] for k in ("subject", "predicate", "object", "source_id", "evidence")}]}
+    commands = ["kbdoc --overview", "kbdoc --predicate usesDataset", "kbsearch BenchY",
+                "cat <<'EOF' > answer.json\n" + json.dumps(answer) + "\nEOF", "kbcheck",
+                "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT && cat answer.json"]
+    result = runner.run(config, "Which benchmark does p1 use?", run_id="x-doc", model=_model(commands),
+                        evidence_doc=doc)
+    assert result["status"] == "answered" and [t["object"] for t in result["triples"]] == ["BenchY"]
+    assert result["input"] == {**result["input"], "kind": "evidence_doc", "triples": 2,
+                               "corpus_commands": ["kbsearch BenchY"]}
+    messages = json.loads(Path(result["trajectory"]).read_text())["messages"]
+    assert "evidence document: 2 knowledge-graph triples" in messages[1]["content"]
+    assert "2 triples" in messages[3]["content"] and "usesDataset (1)" in messages[3]["content"]
+    assert "t00001 | p1 | usesDataset | BenchY | p1-abstract" in messages[5]["content"]
+    assert "command not found" in messages[7]["content"] or "not found" in messages[7]["content"]
+
+
+def test_without_an_evidence_document_kbdoc_says_so(config) -> None:
+    result = runner.run(config, "q", run_id="x-nodoc", model=_model(["kbdoc --overview",
+                                                                      "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]))
+    assert result["input"] == {"kind": "corpus"}
+    assert "this run's input is the corpus" in json.loads(Path(result["trajectory"]).read_text())["messages"][3]["content"]

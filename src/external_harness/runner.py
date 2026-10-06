@@ -8,8 +8,10 @@ writes result.json next to the full trajectory.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -54,10 +56,18 @@ def _usage(message: dict[str, Any]) -> dict[str, int]:
             "completion_tokens": int(usage.get("completion_tokens") or 0)}
 
 
+CORPUS_COMMANDS = re.compile(r"(^|[\s;&|(])(kbsearch|kbread|kbpapers|kbfacts|onto)\b")
+
+
 def run(config: Config, question: str, *, run_id: str | None = None, out: Path | None = None,
-        emit: Emit | None = None, model: Any | None = None) -> dict[str, Any]:
+        emit: Emit | None = None, model: Any | None = None, evidence_doc: Path | None = None) -> dict[str, Any]:
     """Answer ``question``; returns the result document (also written to ``<run folder>/result.json``).
-    ``model`` replaces the configured model (tests pass mini-SWE-agent's DeterministicModel)."""
+    ``model`` replaces the configured model (tests pass mini-SWE-agent's DeterministicModel).
+
+    ``evidence_doc``: a JSON list of triples (triple_id, subject, predicate, object, paper_id, source_id,
+    evidence, interpretation) that is the run's only input. The agent then has only ``kbdoc`` and
+    ``kbcheck`` on its PATH and the instance prompt ``instance_doc``; result.json records the input and
+    any command that still reached for the corpus commands."""
     started = time.monotonic()
     run_id = run_id or f"x-{uuid.uuid4().hex[:8]}"
     folder = (out or config.environment.workdir_root / run_id).resolve()
@@ -80,6 +90,26 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
         counts = kb.stats(conn)
         fingerprint = kb.meta(conn).get("fingerprint", "")
     events: list[dict[str, Any]] = []
+    doc_rows: list[dict[str, Any]] | None = None
+    tool_dirs = [str(Path(sys.executable).parent)]
+    doc_env: dict[str, str] = {}
+    doc_read_only: list[str] = []
+    if evidence_doc is not None:
+        raw = Path(evidence_doc).read_bytes()
+        doc_rows = json.loads(raw)
+        inputs, tools_dir = folder / "input", folder / "bin"
+        inputs.mkdir(exist_ok=True)
+        tools_dir.mkdir(exist_ok=True)
+        (inputs / "evidence_doc.json").write_bytes(raw)
+        for name in ("kbdoc", "kbcheck"):                       # the only commands of this run
+            link = tools_dir / name
+            if link.is_symlink() or link.exists():
+                link.unlink()
+            link.symlink_to(Path(sys.executable).parent / name)
+        tool_dirs = [str(tools_dir)]
+        doc_env = {"XH_DOC": str(inputs / "evidence_doc.json")}
+        doc_read_only = [str(inputs), str(tools_dir)]
+        doc_digest = hashlib.sha256(raw).hexdigest()
 
     def record(event: dict[str, Any]) -> None:
         event = {"t": round(time.monotonic() - started, 2), **event}
@@ -117,20 +147,21 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
     # Everything a command sees: nothing is inherited from this process (no keys, no other paths).
     command_env = {
         "XH_KB_DB": str(index), "XH_MAX_HITS": str(kbc.max_hits), "XH_MAX_TRIPLES": str(config.output.max_triples),
-        # The venv's bin folder holds kbsearch, kbread, ... (console scripts of this package).
-        "PATH": os.pathsep.join([str(Path(sys.executable).parent), "/usr/local/bin", "/usr/bin", "/bin"]),
+        # The venv's bin folder holds kbsearch, kbread, ... (console scripts of this package); with an evidence
+        # document, a folder holding only kbdoc and kbcheck.
+        "PATH": os.pathsep.join([*tool_dirs, "/usr/local/bin", "/usr/bin", "/bin"]), **doc_env,
         "HOME": str(work), "TMPDIR": "/tmp" if sandboxed else str(work), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
         "TERM": "dumb", "PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PYTHONDONTWRITEBYTECODE": "1",
     }
     environment = KbEnvironment(
         cwd=str(work), env=command_env, timeout=config.agent.command_timeout_seconds,
         sandbox=config.environment.sandbox, bwrap=config.environment.bwrap,
-        read_only=[*runtime, str(index.parent), *map(str, config.environment.extra_read_only)])
+        read_only=[*runtime, str(index.parent), *doc_read_only, *map(str, config.environment.extra_read_only)])
     trajectory = folder / "trajectory.json"
     agent = TracedAgent(
         model, environment,
         system_template=_template(config.prompts.system, "system") + (TEXT_FORMAT if textbased else ""),
-        instance_template=_template(config.prompts.instance, "instance"),
+        instance_template=_template(config.prompts.instance, "instance_doc" if doc_rows is not None else "instance"),
         step_limit=config.agent.step_limit, cost_limit=0.0,
         wall_time_limit_seconds=config.agent.wall_time_limit_seconds,
         max_consecutive_format_errors=config.agent.max_consecutive_format_errors,
@@ -151,7 +182,8 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
     error = None
     try:
         exit_info = agent.run(question, n_papers=counts["papers"], n_passages=counts["passages"],
-                              max_triples=config.output.max_triples, textbased=textbased)
+                              max_triples=config.output.max_triples, textbased=textbased,
+                              n_triples=len(doc_rows or []))
     except Exception as exc:
         exit_info = {"exit_status": type(exc).__name__, "submission": ""}
         error = f"{type(exc).__name__}: {str(exc)[:500]}"
@@ -202,6 +234,9 @@ def run(config: Config, question: str, *, run_id: str | None = None, out: Path |
         "answer_source": answer_source,
         "evidence_not_in_source": checked.evidence_not_in_source,
         "outside_paths": [] if sandboxed else outside_paths(commands, work),
+        "input": ({"kind": "evidence_doc", "triples": len(doc_rows), "sha256": doc_digest,
+                   "corpus_commands": [command for command in commands if CORPUS_COMMANDS.search(command)]}
+                  if doc_rows is not None else {"kind": "corpus"}),
         "usage": {
             "model_calls": len(calls),
             "failed_model_calls": sum(not event["ok"] for event in calls),

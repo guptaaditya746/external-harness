@@ -6,8 +6,11 @@
     kbfacts PAPER_ID | --cited-by PAPER_ID | --author NAME   DBLP facts and citations inside the corpus
     onto [WORD] [--kind class|property]                      classes and properties of the ontology
     kbcheck [answer.json]                                    checks the answer file against the contract
+    kbdoc --overview | kbdoc "words" | kbdoc --predicate P [--paper ID] [--offset N] | kbdoc --id T...
+                                                             the evidence document, when it is the input
 
-The runner sets XH_KB_DB (the index built by ``xh index``). Output is plain text, one record per line,
+The runner sets XH_KB_DB (the index built by ``xh index``) and, when an evidence document is the run's input,
+XH_DOC. Output is plain text, one record per line,
 cut to a readable length, so the agent's context stays small.
 """
 
@@ -207,3 +210,63 @@ def kbcheck(argv: list[str] | None = None) -> None:
     print(f"ok: {len(checked.triples)} triples kept, {len(checked.dropped)} dropped")
     for item in checked.dropped[:10]:
         print(f"  dropped ({item['why']}): {json.dumps(item['triple'], ensure_ascii=False)[:160]}")
+
+
+def _doc() -> list[dict]:
+    path = os.environ.get("XH_DOC", "")
+    if not path or not Path(path).is_file():
+        sys.exit("no evidence document: this run's input is the corpus (use kbsearch, kbread, ...)")
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _doc_line(row: dict) -> str:
+    return (f"{row['triple_id']} | {row['subject']} | {row['predicate']} | {_cut(row['object'], 80)} | "
+            f"{row['source_id']}\n    {_cut(row.get('evidence') or '', 240)}")
+
+
+def kbdoc(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="kbdoc", description="The evidence document: the triples (each with "
+                                                               "the passage that states it) that are this run's input.")
+    parser.add_argument("query", nargs="?", help="words to rank the triples by (subject, relation, object, passage)")
+    parser.add_argument("--overview", action="store_true", help="counts, relations, papers and interpretations")
+    parser.add_argument("--predicate", help="only triples with this relation")
+    parser.add_argument("--paper", help="only triples of this paper id")
+    parser.add_argument("--interpretation", help="only triples of this interpretation id")
+    parser.add_argument("--id", nargs="+", help="these triple ids, with their full evidence")
+    parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument("-k", type=int, default=int(os.environ.get("XH_MAX_HITS", "25")), help="triples per page")
+    args = parser.parse_args(argv)
+    rows = _doc()
+    if args.overview:
+        from collections import Counter
+
+        print(f"{len(rows)} triples")
+        for name, count in Counter(row.get("interpretation") or "-" for row in rows).most_common():
+            print(f"interpretation {name}: {count} triples")
+        print("relations: " + ", ".join(f"{name} ({count})" for name, count in
+                                        Counter(row["predicate"] for row in rows).most_common(40)))
+        print("papers: " + ", ".join(f"{name} ({count})" for name, count in
+                                     Counter(row.get("paper_id") or "?" for row in rows).most_common(60)))
+        return
+    if args.id:
+        wanted = set(args.id)
+        for row in rows:
+            if row["triple_id"] in wanted:
+                print(f"{row['triple_id']} | {row['subject']} | {row['predicate']} | {row['object']} | "
+                      f"{row['source_id']}\n    {row.get('evidence') or ''}")
+        return
+    chosen = [row for row in rows
+              if (not args.predicate or row["predicate"].casefold() == args.predicate.casefold())
+              and (not args.paper or (row.get("paper_id") or "") == args.paper)
+              and (not args.interpretation or (row.get("interpretation") or "") == args.interpretation)]
+    if args.query:
+        wanted = set(_words(args.query))
+        scored = [(len(wanted & set(_words(f"{r['subject']} {r['predicate']} {r['object']} {r.get('evidence')}"))), i)
+                  for i, r in enumerate(chosen)]
+        chosen = [chosen[i] for score, i in sorted(scored, key=lambda item: (-item[0], item[1])) if score]
+    page = chosen[max(0, args.offset): max(0, args.offset) + max(1, args.k)]
+    for row in page:
+        print(_doc_line(row))
+    rest = len(chosen) - max(0, args.offset) - len(page)
+    print(f"({len(chosen)} triples" + (f"; {rest} more: --offset {max(0, args.offset) + len(page)}" if rest > 0 else "")
+          + ")")

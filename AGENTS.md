@@ -8,5 +8,6 @@
   made-up entities (p99, MethodX, BenchY).
 - Every setting a run depends on belongs in the YAML config (`config.py`), and changes the config digest.
 - mini-SWE-agent stays pinned; upgrade it only deliberately and note it in the results.
-- The knowledge-base commands only read (`kb.connect` opens SQLite read-only).
+- The knowledge-base commands only read (`kb.connect` opens SQLite read-only). With `--triples-file`
+  (an evidence document as input) the agent gets only `kbdoc` and `kbcheck`; keep it that way.
 - Before committing: `uv run ruff check .` and `uv run pytest -q`.

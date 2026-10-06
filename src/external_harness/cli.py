@@ -112,6 +112,8 @@ def run(
     run_id: Annotated[str | None, typer.Option(help="Id for the run folder and the result.")] = None,
     out: Annotated[Path | None, typer.Option(help="Run folder (default: environment.workdir_root/<run id>).")] = None,
     events: Annotated[bool, typer.Option(help="Print one JSON event per line on stdout.")] = False,
+    triples_file: Annotated[Path | None, typer.Option(
+        help="An evidence document (JSON list of triples) that is the run's only input.", exists=True)] = None,
 ) -> None:
     """Answer one question. The exit code is 0 whenever result.json was written, whatever its status."""
     text = question_file.read_text(encoding="utf-8").strip() if question_file else (question or "").strip()
@@ -124,7 +126,7 @@ def run(
             sys.stdout.write(json.dumps(event, ensure_ascii=False) + "\n")
             sys.stdout.flush()
 
-    result = runner.run(cfg, text, run_id=run_id, out=out, emit=emit)
+    result = runner.run(cfg, text, run_id=run_id, out=out, emit=emit, evidence_doc=triples_file)
     if not events:
         typer.echo(f"{result['status']}: {len(result['triples'])} triples, {result['usage']['model_calls']} model calls, "
                    f"{result['duration_s']}s")

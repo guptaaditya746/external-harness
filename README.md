@@ -27,6 +27,20 @@ Everything else is plain bash in a per-run folder. The commands read `kb.sqlite`
 once from `papers.jsonl`, `passages.jsonl`, `facts.jsonl` and the ontology Turtle files. It is
 opened read-only and rebuilt when an input file changes.
 
+### With an evidence document as input
+
+`xh run --triples-file doc.json` makes a JSON list of triples (`triple_id`, `subject`, `predicate`, `object`,
+`paper_id`, `source_id`, `evidence`, `interpretation`) the run's only evidence. This is the Research Harness's run
+input `evidence_doc`: the question's evidence document D from labelling, so every path is scored on choosing and
+answering from the same triples, not on finding them. Then:
+
+- the agent's PATH holds only `kbdoc` (overview, word search, one relation a page at a time, full evidence by id)
+  and `kbcheck`; the corpus commands are not on it;
+- the instance prompt is `prompts/instance_doc.j2` (unless the config names its own);
+- `result.json` has `input: {kind: "evidence_doc", triples, sha256, corpus_commands}`, the last listing any
+  command that still reached for a corpus command (they fail, but they are recorded for the audit);
+- `output.max_triples` still caps the answer's triples: raise it in the YAML for questions over many papers.
+
 ## Isolation
 
 A command never inherits the runner's environment. It sees only the index path, `PATH` and a home
