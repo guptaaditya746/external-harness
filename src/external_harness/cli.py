@@ -29,6 +29,13 @@ app = typer.Typer(add_completion=False, no_args_is_help=True, help=__doc__.split
 ConfigOption = Annotated[Path, typer.Option("--config", "-c", help="The YAML config file.", exists=True)]
 
 
+def _warn_unsandboxed(cfg) -> None:
+    """Loudly, on stderr (stdout carries the events): a run without the sandbox is not an evaluation run."""
+    if cfg.environment.sandbox == "none":
+        bar = "!" * 78
+        typer.echo(f"{bar}\nWARNING: {runner.SANDBOX_WARNING}.\n{bar}", err=True)
+
+
 @app.command()
 def index(config: ConfigOption) -> None:
     """Build (or rebuild) the knowledge-base index from the corpus files and the ontology."""
@@ -55,6 +62,7 @@ def check(config: ConfigOption,
     if not counts["terms"]:
         problems.append("the ontology has no classes or properties (knowledge_base.ontology)")
     typer.echo(f"sandbox: {cfg.environment.sandbox}")
+    _warn_unsandboxed(cfg)
     if cfg.environment.sandbox == "bubblewrap":
         import shutil
         import subprocess
@@ -120,6 +128,7 @@ def run(
     if not text:
         raise typer.BadParameter("give --question or --question-file")
     cfg = load(config)
+    _warn_unsandboxed(cfg)
 
     def emit(event: dict) -> None:
         if events:
@@ -142,6 +151,7 @@ def batch(
 ) -> None:
     """Run many questions one after the other (without the harness API); one result line each."""
     cfg = load(config)
+    _warn_unsandboxed(cfg)
     rows = json.loads(questions.read_text(encoding="utf-8"))
     wanted = {item.strip() for item in ids.split(",")} if ids else None
     rows = [row for row in rows if wanted is None or row["id"] in wanted]
@@ -149,7 +159,8 @@ def batch(
     target.parent.mkdir(parents=True, exist_ok=True)
     for row in rows:
         result = runner.run(cfg, row["question"], run_id=f"{row['id']}-{time.strftime('%H%M%S')}")
-        line = {key: result[key] for key in ("run_id", "status", "answer", "triples", "usage", "duration_s")}
+        line = {key: result[key] for key in ("run_id", "status", "answer", "triples", "usage", "duration_s", "model",
+                                             "sandbox")}
         with target.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"question_id": row["id"], **line}, ensure_ascii=False) + "\n")
         typer.echo(f"[{row['id']}] {result['status']} {len(result['triples'])} triples {result['duration_s']}s")

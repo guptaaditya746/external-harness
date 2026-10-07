@@ -51,7 +51,8 @@ def test_a_run_uses_the_commands_writes_the_answer_and_records_everything(config
     assert [t["object"] for t in result["triples"]] == ["BenchY"]
     assert result["dropped_triples"][0]["why"] == "unknown source_id 'p9-unknown'"
     assert result["usage"]["model_calls"] == 4 and result["usage"]["commands"] == 4
-    assert [event["type"] for event in events][:3] == ["start", "model_call", "command"]
+    # (the warning: the test config runs without the sandbox)
+    assert [event["type"] for event in events][:4] == ["start", "warning", "model_call", "command"]
     assert events[-1] == {**events[-1], "type": "finish", "status": "answered", "triples": 1}
     folder = config.environment.workdir_root / "x-test"
     trajectory = json.loads((folder / "trajectory.json").read_text())
@@ -145,15 +146,87 @@ def test_the_bubblewrap_sandbox_shows_the_knowledge_base_and_nothing_else(config
     assert result["outside_paths"] == []
 
 
-def test_an_answer_written_as_a_plain_reply_is_accepted_and_marked(config) -> None:
+def test_a_reply_without_a_tool_call_is_a_format_error_and_its_text_is_not_an_answer(config) -> None:
+    """mini-SWE-agent 2.4.6: LitellmModel.query raises FormatError before an assistant message is stored; the
+    reply survives only in the format-error message's extra["response"]. Like mini-SWE-agent, the runner does
+    not take an answer from it (litellm's mock_response plays the endpoint)."""
+    config.model.model_kwargs["mock_response"] = json.dumps(ANSWER)
+    events: list[dict] = []
+    result = runner.run(config, "q", run_id="x-reply", emit=events.append)
+    assert result["status"] == "no_answer" and result["exit_status"] == "RepeatedFormatError"
+    assert result["answer_source"] is None and result["triples"] == []
+    assert result["usage"]["format_errors"] == result["usage"]["model_calls"] == 5
+    assert result["usage"]["commands"] == 0
+    messages = json.loads(Path(result["trajectory"]).read_text())["messages"]
+    assert [message["role"] for message in messages] == ["system", "user", *["user"] * 5, "exit"]
+    rejected = messages[2]
+    assert rejected["extra"]["interrupt_type"] == "FormatError" and "No tool calls" in rejected["content"]
+    reply = rejected["extra"]["response"]["choices"][0]["message"]
+    assert json.loads(reply["content"]) == ANSWER and not reply.get("tool_calls")
+
+
+def test_an_answer_in_a_replys_text_is_not_taken_when_no_file_was_written(config) -> None:
     from minisweagent.models.test_models import DeterministicModel, make_output
 
-    reply = json.dumps(ANSWER)
-    model = DeterministicModel(outputs=[make_output(reply, [{"command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"}],
-                                                    cost=0.0)])
-    result = runner.run(config, "q", run_id="x-reply", model=model)
-    assert result["status"] == "answered" and result["answer_source"] == "final_message"
-    assert [t["object"] for t in result["triples"]] == ["BenchY"]
+    model = DeterministicModel(outputs=[make_output(json.dumps(ANSWER),
+                                                    [{"command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"}], cost=0.0)])
+    result = runner.run(config, "q", run_id="x-text", model=model)
+    assert result["status"] == "no_answer" and result["answer_source"] is None
+
+
+def test_an_answer_printed_after_the_completion_marker_is_the_submission(config) -> None:
+    result = runner.run(config, "q", run_id="x-sub", model=_model(
+        ["echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT && echo '" + json.dumps(ANSWER) + "'"]))
+    assert result["status"] == "answered" and result["answer_source"] == "submission"
+
+
+def test_the_result_records_the_model_and_sandbox_used_and_warns_without_a_sandbox(config) -> None:
+    events: list[dict] = []
+    result = runner.run(config, "q", run_id="x-used", model=_model(["echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]),
+                        emit=events.append)
+    assert result["model"] == "deterministic" and result["config"]["model"] == "openai/heavy-model"
+    assert result["sandbox"] == "none" and result["warnings"] == [runner.SANDBOX_WARNING]
+    assert events[0] == {**events[0], "type": "start", "model": "deterministic", "sandbox": "none"}
+    assert events[1] == {**events[1], "type": "warning", "message": runner.SANDBOX_WARNING}
+    assert result["max_triples"] == 500 and result["truncated_triples"] == 0
+
+
+def test_the_prompt_states_the_limits_as_configured(config) -> None:
+    config.knowledge_base.max_hits = 7
+    result = runner.run(config, "q", run_id="x-prompt", model=_model(["echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]))
+    task = json.loads(Path(result["trajectory"]).read_text())["messages"][1]["content"]
+    assert '`kbsearch "words" [-k 7] [--paper ID]`' in task
+    assert "The run ends after 8 replies (model calls)" in task and "at most 500, one fact each" in task
+    config.output.max_triples = 0
+    result = runner.run(config, "q", run_id="x-prompt0", model=_model(["echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]))
+    task = json.loads(Path(result["trajectory"]).read_text())["messages"][1]["content"]
+    assert "the facts behind the answer, one fact each" in task
+
+
+def test_the_example_config_defaults_to_the_evaluation_setup(monkeypatch, tmp_path: Path) -> None:
+    from external_harness.config import Config
+
+    example = Path(__file__).parent.parent / "config.example.yaml"
+    monkeypatch.setenv("CORPUS_ROOT", str(tmp_path))
+    for name in ("XH_MODEL", "XH_SANDBOX"):
+        monkeypatch.delenv(name, raising=False)
+    cfg = load(example)
+    defaults = Config(knowledge_base={"corpus_dir": tmp_path})
+    assert cfg.model.model_name == defaults.model.model_name == "openai/heavy-model"
+    assert cfg.environment.sandbox == defaults.environment.sandbox == "bubblewrap"
+    assert cfg.output.max_triples == defaults.output.max_triples == 500
+    assert cfg.agent.max_consecutive_format_errors == defaults.agent.max_consecutive_format_errors
+    monkeypatch.setenv("XH_SANDBOX", "none")                          # development
+    assert load(example).environment.sandbox == "none"
+
+
+def test_xh_warns_loudly_on_stderr_when_the_sandbox_is_off(config_file: Path) -> None:
+    from typer.testing import CliRunner
+
+    from external_harness.cli import app
+
+    result = CliRunner().invoke(app, ["check", "--config", str(config_file), "--no-model"])
+    assert "WARNING: sandbox is none" in result.stderr and "WARNING" not in result.stdout
 
 
 def test_show_prints_the_steps(config, capsys) -> None:
@@ -190,6 +263,24 @@ def test_with_an_evidence_document_the_agent_has_only_kbdoc_and_kbcheck(config, 
     assert "2 triples" in messages[3]["content"] and "usesDataset (1)" in messages[3]["content"]
     assert "t00001 | p1 | usesDataset | BenchY | p1-abstract" in messages[5]["content"]
     assert "command not found" in messages[7]["content"] or "not found" in messages[7]["content"]
+    assert result["input"]["doc_matches"] == {"spo_source": 1} and result["not_in_doc"] == 0
+
+
+def test_with_an_evidence_document_triples_that_are_not_ds_are_dropped(config, tmp_path: Path) -> None:
+    doc = tmp_path / "doc.json"
+    doc.write_text(json.dumps(DOC))
+    answer = {"answer": "p1 uses BenchY [p1-abstract].", "triples": [
+        {"triple_id": "t00002", **{k: DOC[1][k] for k in ("subject", "predicate", "object", "source_id")}},
+        {"subject": "p1", "predicate": "usesDataset", "object": "BenchY", "source_id": "p1-abstract"},
+        {"subject": "p1", "predicate": "scores", "object": "sentences", "source_id": "p1-s2-p1"}]}
+    result = runner.run(config, "q", run_id="x-doc2", evidence_doc=doc, model=_model([
+        "cat <<'EOF' > answer.json\n" + json.dumps(answer) + "\nEOF", "kbcheck",
+        "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]))
+    assert result["status"] == "answered" and [t["triple_id"] for t in result["triples"]] == ["t00002", "t00001"]
+    assert result["not_in_doc"] == 1 and result["dropped_triples"][0]["why"] == "not in the evidence document"
+    assert result["input"]["doc_matches"] == {"triple_id": 1, "spo_source": 1}
+    messages = json.loads(Path(result["trajectory"]).read_text())["messages"]
+    assert "(1 not in the evidence document)" in messages[5]["content"]
 
 
 def test_without_an_evidence_document_kbdoc_says_so(config) -> None:

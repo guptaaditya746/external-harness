@@ -6,10 +6,11 @@
     kbfacts PAPER_ID | --cited-by PAPER_ID | --author NAME   DBLP facts and citations inside the corpus
     onto [WORD] [--kind class|property]                      classes and properties of the ontology
     kbcheck [answer.json]                                    checks the answer file against the contract
-    kbdoc --overview | kbdoc "words" | kbdoc --predicate P [--paper ID] [--offset N] | kbdoc --id T...
+    kbdoc --overview | kbdoc "words" [-k 10] | kbdoc --predicate P [--paper ID] [--offset N] | kbdoc --id T...
                                                              the evidence document, when it is the input
 
-The runner sets XH_KB_DB (the index built by ``xh index``) and, when an evidence document is the run's input,
+The runner sets XH_KB_DB (the index built by ``xh index``), XH_MAX_HITS (knowledge_base.max_hits: the default
+-k of kbsearch and kbdoc), XH_MAX_TRIPLES (output.max_triples) and, when an evidence document is the run's input,
 XH_DOC. Output is plain text, one record per line,
 cut to a readable length, so the agent's context stays small.
 """
@@ -58,7 +59,8 @@ def _title_has(title: str, term: str) -> bool:
 def kbsearch(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="kbsearch", description="Full-text search (BM25) over the corpus passages.")
     parser.add_argument("query", help='words to search for; put exact phrases in double quotes')
-    parser.add_argument("-k", type=int, default=int(os.environ.get("XH_MAX_HITS", "10")), help="number of hits")
+    parser.add_argument("-k", type=int, default=int(os.environ.get("XH_MAX_HITS", "10")),
+                        help="number of hits (default: knowledge_base.max_hits)")
     parser.add_argument("--paper", help="only passages of this paper id")
     args = parser.parse_args(argv)
     with _conn() as conn:
@@ -203,11 +205,15 @@ def kbcheck(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     path = Path(args.path)
     document = contract.parse(path.read_text(encoding="utf-8")) if path.is_file() else None
+    doc = _doc() if os.environ.get("XH_DOC") else None            # doc mode: only D's triples count
     with _conn() as conn:
-        checked = contract.check(document, conn, int(os.environ.get("XH_MAX_TRIPLES", "60")))
+        checked = contract.check(document, conn, int(os.environ.get("XH_MAX_TRIPLES", "500")), doc=doc)
     if not checked.ok:
         sys.exit(f"invalid: {checked.problem}")
-    print(f"ok: {len(checked.triples)} triples kept, {len(checked.dropped)} dropped")
+    print(f"ok: {len(checked.triples)} triples kept, {len(checked.dropped)} dropped"
+          + (f" ({checked.not_in_doc} not in the evidence document)" if checked.not_in_doc else "")
+          + (f" ({checked.truncated} over the limit of {os.environ.get('XH_MAX_TRIPLES')} triples)"
+             if checked.truncated else ""))
     for item in checked.dropped[:10]:
         print(f"  dropped ({item['why']}): {json.dumps(item['triple'], ensure_ascii=False)[:160]}")
 
@@ -234,7 +240,8 @@ def kbdoc(argv: list[str] | None = None) -> None:
     parser.add_argument("--interpretation", help="only triples of this interpretation id")
     parser.add_argument("--id", nargs="+", help="these triple ids, with their full evidence")
     parser.add_argument("--offset", type=int, default=0)
-    parser.add_argument("-k", type=int, default=int(os.environ.get("XH_MAX_HITS", "25")), help="triples per page")
+    parser.add_argument("-k", type=int, default=int(os.environ.get("XH_MAX_HITS", "10")),
+                        help="triples per page (default: knowledge_base.max_hits)")
     args = parser.parse_args(argv)
     rows = _doc()
     if args.overview:

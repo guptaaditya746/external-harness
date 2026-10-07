@@ -134,3 +134,77 @@ def test_evidence_that_is_not_in_the_passage_is_counted(index: Path) -> None:
         {"subject": "p1", "predicate": "claims", "object": "fast", "source_id": "p1-s2-p1", "evidence": "it is very fast"}]}
     with kb.connect(index) as conn:
         assert contract.check(document, conn).evidence_not_in_source == 1
+
+
+DOC = [{"triple_id": "t00001", "subject": "p1", "predicate": "usesDataset", "object": "BenchY", "paper_id": "p1",
+        "source_id": "p1-abstract", "evidence": "evaluate on BenchY", "interpretation": "i1"},
+       {"triple_id": "t00002", "subject": "p1", "predicate": "detects", "object": "hallucination", "paper_id": "p1",
+        "source_id": "p1-abstract", "evidence": "hallucination detection", "interpretation": "i1"},
+       {"triple_id": "t00003", "subject": "p2", "predicate": "comparedWith", "object": "the detector", "paper_id": "p2",
+        "source_id": "p2-abstract", "evidence": "compared with the detector", "interpretation": "i1"}]
+
+
+def test_in_doc_mode_only_the_evidence_documents_triples_are_kept(index: Path) -> None:
+    document = {"answer": "x [p1-abstract].", "triples": [
+        # by triple id: D's fields are kept (the agent's evidence quote stays)
+        {"triple_id": "t00002", "subject": "p1", "predicate": "detects", "object": "hallucinations",
+         "source_id": "p1-abstract", "evidence": "hallucination detection for retrieval"},
+        # by normalised (s, p, o) and source id
+        {"subject": " P1 ", "predicate": "hrn:usesDataset", "object": "benchy", "source_id": "[p1-abstract]",
+         "evidence": "evaluate on BenchY"},
+        # by (s, p, o) alone: takes the D triple's source
+        {"subject": "p2", "predicate": "comparedWith", "object": "The Detector", "source_id": "p1-s2-p1"},
+        # a real passage of the corpus, but not a triple of D
+        {"subject": "p1", "predicate": "scores", "object": "sentences", "source_id": "p1-s2-p1",
+         "evidence": "scores each generated sentence"},
+        {"triple_id": "t99999", "subject": "p1", "predicate": "claims", "object": "x", "source_id": "p1-abstract"}]}
+    with kb.connect(index) as conn:
+        checked = contract.check(document, conn, doc=DOC)
+        corpus_mode = contract.check(document, conn)
+    assert checked.ok and [t.triple_id for t in checked.triples] == ["t00002", "t00001", "t00003"]
+    assert checked.triples[0].object == "hallucination" and checked.triples[0].evidence.endswith("retrieval")
+    assert checked.triples[2].source_id == "p2-abstract" and checked.triples[2].evidence == "compared with the detector"
+    assert checked.not_in_doc == 2 and [item["why"] for item in checked.dropped] == [contract.NOT_IN_DOC] * 2
+    assert checked.doc_matches == {"triple_id": 1, "spo_source": 1, "spo": 1}
+    # Without D (corpus mode) only the source ids are checked: the non-D triples stay.
+    assert corpus_mode.not_in_doc == 0 and len(corpus_mode.triples) == 5
+
+
+def test_the_triple_cap_is_reported_and_zero_means_no_cap(index: Path) -> None:
+    document = {"answer": "x [p1-abstract].", "triples": [
+        {"subject": "p1", "predicate": f"rel{i}", "object": "x", "source_id": "p1-abstract"} for i in range(5)]}
+    with kb.connect(index) as conn:
+        capped = contract.check(document, conn, 3)
+        uncapped = contract.check(document, conn, 0)
+        default = contract.check(document, conn)
+    assert len(capped.triples) == 3 and capped.truncated == 2
+    assert capped.dropped[0]["why"] == "more than 3 triples (output.max_triples)"
+    assert len(uncapped.triples) == 5 and uncapped.truncated == 0
+    assert default.truncated == 0                                  # the default (500) does not bind
+
+
+def test_kbcheck_in_doc_mode_names_the_triples_that_are_not_ds(index: Path, tmp_path: Path, monkeypatch, capsys) -> None:
+    doc = tmp_path / "doc.json"
+    doc.write_text(json.dumps(DOC))
+    monkeypatch.setenv("XH_DOC", str(doc))
+    path = tmp_path / "answer.json"
+    path.write_text(json.dumps({"answer": "x [p1-abstract].", "triples": [
+        {k: DOC[0][k] for k in ("subject", "predicate", "object", "source_id", "evidence")},
+        {"subject": "p1", "predicate": "scores", "object": "sentences", "source_id": "p1-s2-p1"}]}))
+    tools.kbcheck([str(path)])
+    out = capsys.readouterr().out
+    assert out.startswith("ok: 1 triples kept, 1 dropped (1 not in the evidence document)")
+    assert "dropped (not in the evidence document)" in out
+
+
+def test_kbdoc_pages_by_max_hits_as_its_help_says(tmp_path: Path, monkeypatch, capsys) -> None:
+    doc = tmp_path / "doc.json"
+    doc.write_text(json.dumps(DOC))
+    monkeypatch.setenv("XH_DOC", str(doc))
+    monkeypatch.setenv("XH_MAX_HITS", "2")
+    tools.kbdoc([])
+    assert "(3 triples; 1 more: --offset 2)" in capsys.readouterr().out
+    monkeypatch.delenv("XH_MAX_HITS")
+    with pytest.raises(SystemExit):
+        tools.kbdoc(["--help"])
+    assert "default: knowledge_base.max_hits" in capsys.readouterr().out

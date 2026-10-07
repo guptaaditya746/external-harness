@@ -35,7 +35,7 @@ class ModelConfig(_Strict):
 
 
 class AgentConfig(_Strict):
-    step_limit: int = Field(30, ge=1, description="Model calls (each one command) before the run stops.")
+    step_limit: int = Field(30, ge=1, description="Model calls before the run stops (every tool call of a reply runs).")
     wall_time_limit_seconds: int = Field(900, ge=0, description="0 = no limit.")
     command_timeout_seconds: int = Field(60, ge=1)
     max_consecutive_format_errors: int = Field(5, ge=1, description="Replies without a command in a row before the run ends.")
@@ -54,10 +54,11 @@ class KnowledgeBaseConfig(_Strict):
 
 
 class EnvironmentConfig(_Strict):
-    # bubblewrap: every command in a fresh namespace (no network; writable: the run folder only;
-    # readable: the system, this package's Python and the index). none: a clean environment in the
-    # run folder, but the user's files stay readable (result.json flags commands that look outside).
-    sandbox: Literal["none", "bubblewrap"] = "none"
+    # bubblewrap (the default, required for evaluation runs): every command in a fresh namespace (no
+    # network; writable: the run folder only; readable: the system, this package's Python and the index).
+    # none (development only): a clean environment in the run folder, but the user's files stay readable
+    # (result.json flags commands that look outside, and `xh run` warns).
+    sandbox: Literal["none", "bubblewrap"] = "bubblewrap"
     bwrap: str = "bwrap"
     extra_read_only: list[Path] = Field(default_factory=list, description="More folders visible in the sandbox.")
     workdir_root: Path = Path("runs")
@@ -69,7 +70,8 @@ class PromptConfig(_Strict):
 
 
 class OutputConfig(_Strict):
-    max_triples: int = Field(60, ge=0)
+    # High enough not to bind for realistic gold; result.json reports how many triples a cap cut (truncated).
+    max_triples: int = Field(500, ge=0, description="Most triples kept from answer.json; 0 = no cap.")
 
 
 class Config(_Strict):

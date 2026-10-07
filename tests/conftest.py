@@ -37,7 +37,8 @@ def config_file(corpus: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         "    api_key: ${XH_TEST_KEY:-secret}\n"
         "agent:\n  step_limit: 8\n  command_timeout_seconds: 20\n"
         "knowledge_base:\n  corpus_dir: ${CORPUS_ROOT}\n  ontology: corpus/ontology.ttl\n  index_dir: index\n"
-        "environment:\n  workdir_root: runs\n",
+        # Without bubblewrap (the config default) so the tests run anywhere; one test switches it on.
+        "environment:\n  sandbox: none\n  workdir_root: runs\n",
         encoding="utf-8",
     )
     return path
